@@ -3,3 +3,4 @@ openai
 aiosqlite
 python-dotenv
 aiohttp
+aiohttp-socks

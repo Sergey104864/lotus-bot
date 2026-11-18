@@ -11,6 +11,10 @@ from aiohttp import web
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
+# --- ИМПОРТЫ ДЛЯ ПРОКСИ ---
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiohttp_socks import ProxyConnector
+
 from database import init_db, add_booking, get_user_bookings, get_today_bookings
 
 load_dotenv()
@@ -26,9 +30,17 @@ client = AsyncOpenAI(
     base_url="https://api.proxyapi.ru/v1"
 )
 
-# ================= БОТ =================
+# ================= БОТ С ПРОКСИ =================
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
+
+proxy_url = os.getenv("HTTPS_PROXY")
+if proxy_url and proxy_url.startswith("socks5h://"):
+    proxy_url = proxy_url.replace("socks5h://", "socks5://", 1)
+
+connector = ProxyConnector.from_url(proxy_url) if proxy_url else None
+session = AiohttpSession(proxy=connector)
+
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
 
@@ -99,7 +111,7 @@ async def my_bookings(callback: types.CallbackQuery):
 
     text = "Ваши записи:\n\n"
     for b in bookings:
-        text += f"• {b[0]} на {b[1]} в {b[2]}\n"
+        text += f"- {b[0]} на {b[1]} в {b[2]}\n"
     await callback.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back")]])
@@ -159,7 +171,7 @@ async def process_phone(message: types.Message, state: FSMContext):
 
     # Уведомляем админа
     admin_text = (
-        f"НОВАЯ ЗАПИСЬ!\n\n"
+        f"НОВАЯ ЗАПИСЬ\n\n"
         f"Услуга: {data['service']}\n"
         f"Дата: {data['date']}\n"
         f"Время: {data['time']}\n"
@@ -199,7 +211,6 @@ async def admin_panel(message: types.Message):
 # === ИИ (ОБРАБОТЧИК ВСЕХ ТЕКСТОВ) ===
 @dp.message(F.text)
 async def ai_consultant(message: types.Message, state: FSMContext):
-    # Если пользователь в процессе записи, не мешаем
     current_state = await state.get_state()
     if current_state is not None:
         return
