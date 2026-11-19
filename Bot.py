@@ -11,7 +11,6 @@ from aiohttp import web
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
-# --- ИМПОРТЫ ДЛЯ ПРОКСИ ---
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp_socks import ProxyConnector
 
@@ -24,27 +23,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 PROXYAPI_KEY = os.getenv("PROXYAPI_KEY")
 
-# ИИ
-client = AsyncOpenAI(
-    api_key=PROXYAPI_KEY,
-    base_url="https://api.proxyapi.ru/v1"
-)
-
-# ================= БОТ С ПРОКСИ =================
-logging.basicConfig(level=logging.INFO)
-
-proxy_url = os.getenv("HTTPS_PROXY")
-if proxy_url and proxy_url.startswith("socks5h://"):
-    proxy_url = proxy_url.replace("socks5h://", "socks5://", 1)
-
-connector = ProxyConnector.from_url(proxy_url) if proxy_url else None
-session = AiohttpSession(proxy=connector)
-
-bot = Bot(token=BOT_TOKEN, session=session)
+# Глобальные переменные (инициализируются в main)
+bot = None
+client = None
 dp = Dispatcher()
 
 
-# ================= СОСТОЯНИЯ (FSM) =================
+# ================= СОСТОЯНИЯ =================
 class BookingStates(StatesGroup):
     service = State()
     date = State()
@@ -118,7 +103,6 @@ async def my_bookings(callback: types.CallbackQuery):
     )
 
 
-# === ЗАПИСЬ ===
 @dp.callback_query(F.data == "book")
 async def start_booking(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Выберите услугу:", reply_markup=get_services())
@@ -150,8 +134,6 @@ async def process_time(message: types.Message, state: FSMContext):
 @dp.message(BookingStates.name)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-
-    # Кнопка для отправки телефона
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Отправить телефон", request_contact=True)]],
         resize_keyboard=True,
@@ -165,11 +147,8 @@ async def process_name(message: types.Message, state: FSMContext):
 async def process_phone(message: types.Message, state: FSMContext):
     phone = message.contact.phone_number
     data = await state.get_data()
-
-    # Сохраняем в БД
     await add_booking(message.from_user.id, data['service'], data['date'], data['time'], data['name'], phone)
 
-    # Уведомляем админа
     admin_text = (
         f"НОВАЯ ЗАПИСЬ\n\n"
         f"Услуга: {data['service']}\n"
@@ -180,8 +159,6 @@ async def process_phone(message: types.Message, state: FSMContext):
         f"Клиент: @{message.from_user.username or 'нет'}"
     )
     await bot.send_message(ADMIN_ID, admin_text)
-
-    # Ответ клиенту
     await message.answer(
         "Вы успешно записаны!\nЖдём вас в Студии Лотос.",
         reply_markup=types.ReplyKeyboardRemove()
@@ -190,25 +167,21 @@ async def process_phone(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# === АДМИНКА ===
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     today = datetime.now().strftime("%d.%m")
     bookings = await get_today_bookings(today)
-
     if not bookings:
         await message.answer(f"На {today} записей нет.")
         return
-
     text = f"Записи на {today}:\n\n"
     for b in bookings:
         text += f"{b[0]} | {b[1]} | {b[2]} | {b[3]}\n"
     await message.answer(text)
 
 
-# === ИИ (ОБРАБОТЧИК ВСЕХ ТЕКСТОВ) ===
 @dp.message(F.text)
 async def ai_consultant(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
@@ -240,7 +213,7 @@ async def ai_consultant(message: types.Message, state: FSMContext):
         print(f"Ошибка ИИ: {e}")
 
 
-# ================= ЗАПУСК (Для Render) =================
+# ================= ЗАПУСК =================
 async def web_server():
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text="Bot is alive!"))
@@ -253,6 +226,22 @@ async def web_server():
 
 
 async def main():
+    global bot, client
+
+    # Инициализация ИИ
+    client = AsyncOpenAI(
+        api_key=PROXYAPI_KEY,
+        base_url="https://api.proxyapi.ru/v1"
+    )
+
+    # Инициализация бота с прокси
+    proxy_url = os.getenv("HTTPS_PROXY")
+    if proxy_url and proxy_url.startswith("socks5h://"):
+        proxy_url = proxy_url.replace("socks5h://", "socks5://", 1)
+    connector = ProxyConnector.from_url(proxy_url) if proxy_url else None
+    session = AiohttpSession(proxy=connector)
+    bot = Bot(token=BOT_TOKEN, session=session)
+
     await init_db()
     print("Бот Студия Лотос запущен!")
     asyncio.create_task(web_server())
