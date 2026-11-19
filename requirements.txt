@@ -4,3 +4,5 @@ aiosqlite
 python-dotenv
 aiohttp
 aiohttp-socks
+socksio
+httpx[socks]
