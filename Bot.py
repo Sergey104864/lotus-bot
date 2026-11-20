@@ -9,7 +9,9 @@ import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -192,24 +194,50 @@ async def cb_prices(callback: types.CallbackQuery) -> None:
         lines.append(f"• {s['name']} — {s['price']} ₽ ({s['duration']} мин)")
     await callback.message.edit_text("\n".join(lines), reply_markup=back_kb())
     await callback.answer()
-@dp.callback_query(F.data == "masters")
-async def cb_masters(callback: types.CallbackQuery) -> None:
+def masters_view(index: int) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Карточка одного мастера с листалкой."""
     rows = db.masters()
     if not rows:
+        return None
+    index = index % len(rows)
+    m = rows[index]
+    text = (
+        f"<b>{m['name']}</b>\n"
+        f"{m['spec']} · опыт {m['exp']}\n\n"
+        f"{m['about'] or ''}"
+    )
+    nav = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="‹", callback_data=f"mcard:{(index - 1) % len(rows)}"),
+                InlineKeyboardButton(text=f"{index + 1} из {len(rows)}", callback_data="noop"),
+                InlineKeyboardButton(text="›", callback_data=f"mcard:{(index + 1) % len(rows)}"),
+            ],
+            [InlineKeyboardButton(text=f"Записаться к {m['name']}", callback_data=f"tomaster:{m['id']}")],
+            [InlineKeyboardButton(text="В меню", callback_data="back")],
+        ]
+    )
+    return text, nav
+@dp.callback_query(F.data == "masters")
+async def cb_masters(callback: types.CallbackQuery) -> None:
+    view = masters_view(0)
+    if view is None:
         await callback.message.edit_text("Пока нет мастеров.", reply_markup=back_kb())
         await callback.answer()
         return
-    for m in rows:
-        text = f"<b>{m['name']}</b>\n{m['spec']} · опыт {m['exp']}\n\n{m['about'] or ''}"
-        await callback.message.answer(
-            text.strip(),
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text=f"Записаться к {m['name']}", callback_data=f"tomaster:{m['id']}")],
-                ]
-            ),
-        )
-    await callback.message.answer("Выберите действие:", reply_markup=back_kb())
+    await callback.message.edit_text(view[0], reply_markup=view[1])
+    await callback.answer()
+@dp.callback_query(F.data.startswith("mcard:"))
+async def cb_master_card(callback: types.CallbackQuery) -> None:
+    index = int(callback.data.split(":")[1])
+    view = masters_view(index)
+    if view is None:
+        await callback.answer("Мастера не найдены", show_alert=True)
+        return
+    await callback.message.edit_text(view[0], reply_markup=view[1])
+    await callback.answer()
+@dp.callback_query(F.data == "noop")
+async def cb_noop(callback: types.CallbackQuery) -> None:
     await callback.answer()
 @dp.callback_query(F.data.startswith("tomaster:"))
 async def cb_to_master(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -387,8 +415,10 @@ async def _notify_admin(booking_id: int) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("Не удалось уведомить админа: %s", exc)
-async def _send_to_sheet(booking_id: int) -> None:
-    """Отправка записи в Google Таблицу через Apps Script вебхук."""
+async def _send_to_sheet(booking_id: int, action: str = "create") -> None:
+    """Отправка записи в Google Таблицу через Apps Script вебхук.
+    action = create — добавить строку; cancel — найти по ID и поменять статус.
+    """
     if not (SHEETS_URL and SHEETS_TOKEN):
         return
     row = db.booking(booking_id)
@@ -396,14 +426,16 @@ async def _send_to_sheet(booking_id: int) -> None:
         return
     payload = {
         "token": SHEETS_TOKEN,
+        "action": action,
+        "id": row["id"],
         "date": row["day"],
         "time": row["time"],
-        "client": row["client_name"],
-        "phone": row["phone"],
+        "master": row["master_name"],
         "service": row["service_name"],
         "price": row["price"],
-        "master": row["master_name"],
-        "status": "active",
+        "client": row["client_name"],
+        "phone": row["phone"],
+        "status": "активна" if action == "create" else "отменена",
     }
     try:
         async with ClientSession(timeout=ClientTimeout(total=12)) as session:
@@ -443,6 +475,7 @@ async def cb_cancel(callback: types.CallbackQuery) -> None:
     if not db.cancel(booking_id):
         await callback.answer("Уже отменена", show_alert=True)
         return
+    await _send_to_sheet(booking_id, "cancel")
     text = f"Отменено: {human_day(row['day'])}, {row['time']} — {row['service_name']}"
     await callback.answer("Готово")
     if is_admin(callback.from_user.id) and callback.from_user.id != row["user_id"] and bot:
@@ -561,7 +594,11 @@ async def main() -> None:
         )
     else:
         log.warning("PROXYAPI_KEY не задан — ИИ выключен")
-    bot = Bot(token=BOT_TOKEN, session=build_session())
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=build_session(),
+    )
     db.init_db()
     log.info("Бот %s запущен", BUSINESS_NAME)
     asyncio.create_task(web_server())
