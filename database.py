@@ -1,4 +1,4 @@
-im"""База данных бота: мастера, услуги, записи."""
+"""База данных бота: мастера, услуги, записи."""
 from __future__ import annotations
 import os
 import sqlite3
