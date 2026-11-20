@@ -3,6 +3,8 @@
 """
 from __future__ import annotations
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
@@ -44,6 +46,8 @@ SLOT_STEP = int(os.getenv("SLOT_STEP") or "30")
 REMIND_HOURS = int(os.getenv("REMIND_HOURS") or "2")
 SHEETS_URL = (os.getenv("SHEETS_WEBHOOK_URL") or "").strip()
 SHEETS_TOKEN = (os.getenv("SHEETS_WEBHOOK_TOKEN") or "").strip()
+# Секретная ссылка для =IMPORTDATA() в Google Таблице
+EXPORT_TOKEN = (os.getenv("EXPORT_TOKEN") or "").strip()
 bot: Bot | None = None
 client: AsyncOpenAI | None = None
 dp = Dispatcher()
@@ -568,12 +572,46 @@ async def reminder_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("Ошибка напоминаний: %s", exc)
         await asyncio.sleep(600)
+async def export_csv(request: web.Request) -> web.Response:
+    """Выгрузка записей для =IMPORTDATA() в Google Таблице."""
+    if not EXPORT_TOKEN or request.match_info.get("token") != EXPORT_TOKEN:
+        raise web.HTTPNotFound()
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(
+        ["ID", "Дата", "Время", "Мастер", "Услуга", "Цена", "Клиент", "Телефон", "Статус"]
+    )
+    for row in db.all_bookings():
+        try:
+            day = datetime.strptime(str(row["day"]), "%Y-%m-%d").strftime("%d.%m.%Y")
+        except (ValueError, TypeError):
+            day = str(row["day"])
+        writer.writerow(
+            [
+                row["id"],
+                day,
+                row["time"],
+                row["master_name"],
+                row["service_name"],
+                row["price"],
+                row["client_name"],
+                row["phone"],
+                "активна" if row["status"] == "active" else "отменена",
+            ]
+        )
+    return web.Response(
+        text=buffer.getvalue(),
+        content_type="text/csv",
+        charset="utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 async def web_server() -> None:
     app = web.Application()
     async def health(_request: web.Request) -> web.Response:
         return web.Response(text="ok")
     app.router.add_get("/", health)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/export/{token}.csv", export_csv)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", "8080"))
