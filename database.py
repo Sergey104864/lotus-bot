@@ -182,6 +182,13 @@ def day_bookings(day: str) -> list[sqlite3.Row]:
         return conn.execute(
             "SELECT * FROM bookings WHERE day = ? AND status = 'active' ORDER BY time", (day,)
         ).fetchall()
+def all_bookings(limit: int = 2000) -> list[sqlite3.Row]:
+    """Все записи по возрастанию ID — для выгрузки в таблицу."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bookings ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return list(reversed(rows))
 def due_reminders(hours: int) -> list[sqlite3.Row]:
     now = datetime.now()
     limit = now + timedelta(hours=hours)
